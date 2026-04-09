@@ -3,10 +3,13 @@ use indicatif::ProgressBar;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::time::Instant;
-use tokio::sync::Barrier;
+
+use tokio::net::UdpSocket;
+use tokio::sync::Notify;
+use tokio::time::{sleep, Duration, Instant};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "High-performance Hybrid Load Tester")]
@@ -23,15 +26,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> PyResult<()> {
-
-    // ------------------------------------------------------------
-    // Parse CLI arguments
-    // ------------------------------------------------------------
     let args = Args::parse();
 
     // ------------------------------------------------------------
     // Load Python scenario script
-    // This script dynamically generates request payloads
     // ------------------------------------------------------------
     let script_content =
         std::fs::read_to_string("scripts/scenario.py")
@@ -41,39 +39,26 @@ async fn main() -> PyResult<()> {
     let c_script = CStr::from_bytes_with_nul(binding.as_slice()).unwrap();
 
     // ------------------------------------------------------------
-    // Shared metrics and measurement structures
+    // Shared metrics
     // ------------------------------------------------------------
-
-    // Successful request counter
     let success_count = Arc::new(AtomicUsize::new(0));
-
-    // Failed request counter
     let failure_count = Arc::new(AtomicUsize::new(0));
 
-    // Store latency values for statistical analysis
     let latencies = Arc::new(Mutex::new(Vec::<u128>::new()));
 
-    // Store request start timestamps for synchronization analysis
-    let start_times = Arc::new(Mutex::new(Vec::<u128>::new()));
+    // Lock-free timestamp storage
+    let start_times = Arc::new(
+        (0..args.requests)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
 
-    // ------------------------------------------------------------
-    // Two-Phase Synchronization Barrier
-    //
-    // All workers must reach this barrier before any request
-    // is allowed to be dispatched. This separates:
-    //
-    // Phase 1 → Preparation
-    // Phase 2 → Execution
-    // ------------------------------------------------------------
-    let barrier = Arc::new(Barrier::new(args.requests));
+    // Trigger synchronization primitive
+    let trigger = Arc::new(Notify::new());
 
-    // Shared HTTP client
     let client = Arc::new(reqwest::Client::new());
-
-    // Progress bar for CLI visualization
     let pb = ProgressBar::new(args.requests as u64);
 
-    // Global reference start time
     let start_time = Instant::now();
 
     println!("🚀 Blitz-Load starting on {}", args.url);
@@ -83,39 +68,30 @@ async fn main() -> PyResult<()> {
     // ------------------------------------------------------------
     // Spawn request workers
     // ------------------------------------------------------------
-    for _ in 0..args.requests {
-
+    for i in 0..args.requests {
         let client = Arc::clone(&client);
         let success_count = Arc::clone(&success_count);
         let failure_count = Arc::clone(&failure_count);
         let latencies = Arc::clone(&latencies);
         let start_times = Arc::clone(&start_times);
-        let barrier = Arc::clone(&barrier);
+        let trigger = Arc::clone(&trigger);
 
         let pb = pb.clone();
         let url = args.url.clone();
         let c_script_owned = c_script.to_owned();
 
         let handle = tokio::spawn(async move {
-
             // =====================================================
-            // PHASE 1 — REQUEST PREPARATION
-            //
-            // This stage performs all expensive work:
-            //  - Python execution
-            //  - Payload generation
-            //  - JSON serialization
-            //
-            // No network activity occurs yet.
+            // PHASE 1 — PREPARE REQUEST
             // =====================================================
             let payload = Python::with_gil(|py| {
-
                 let module = PyModule::from_code(
                     py,
                     &c_script_owned,
                     c"scenario.py",
-                    c"scripts"
-                ).unwrap();
+                    c"scripts",
+                )
+                .unwrap();
 
                 let result = module
                     .getattr("get_payload")
@@ -132,34 +108,20 @@ async fn main() -> PyResult<()> {
             });
 
             // =====================================================
-            // TWO-PHASE SYNCHRONIZATION POINT
-            //
-            // All workers wait here until every worker has
-            // finished preparation.
-            //
-            // Once the final worker arrives, all workers are
-            // released simultaneously to send requests.
+            // WAIT FOR TRIGGER
             // =====================================================
-            barrier.wait().await;
+            trigger.notified().await;
 
             // =====================================================
-            // PHASE 2 — REQUEST DISPATCH
-            //
-            // This timestamp marks the moment each worker begins
-            // the network send operation.
+            // PHASE 2 — SEND REQUEST
             // =====================================================
             let req_start = Instant::now();
 
-            let since_beginning = req_start
-                .duration_since(start_time)
-                .as_nanos();
+            let since_beginning =
+                req_start.duration_since(start_time).as_nanos();
 
-            // Record start timestamp for synchronization analysis
-            start_times.lock().unwrap().push(since_beginning);
+            start_times[i].store(since_beginning as u64, Ordering::Relaxed);
 
-            // =====================================================
-            // Perform HTTP request
-            // =====================================================
             let response = client
                 .post(url)
                 .header("Content-Type", "application/json")
@@ -167,16 +129,12 @@ async fn main() -> PyResult<()> {
                 .send()
                 .await;
 
-            // Measure request latency
             let duration = req_start.elapsed().as_millis();
 
-            // =====================================================
-            // Update metrics
-            // =====================================================
             match response {
                 Ok(resp) if resp.status().is_success() => {
                     success_count.fetch_add(1, Ordering::SeqCst);
-                    latencies.lock().unwrap().push(duration as u128);
+                    latencies.lock().unwrap().push(duration);
                 }
                 _ => {
                     failure_count.fetch_add(1, Ordering::SeqCst);
@@ -187,30 +145,47 @@ async fn main() -> PyResult<()> {
         });
 
         handles.push(handle);
-
-        // --------------------------------------------------------
-        // Concurrency control
-        // Limits the number of active tasks
-        // --------------------------------------------------------
-        if handles.len() >= args.concurrency {
-            let _ = futures::future::join_all(handles.drain(..)).await;
-        }
     }
 
-    // Wait for remaining workers
+    // ------------------------------------------------------------
+    // UDP LISTENER
+    // ------------------------------------------------------------
+    let trigger_socket = UdpSocket::bind("127.0.0.1:9000").await.unwrap();
+
+    println!("Waiting for UDP trigger on 127.0.0.1:9000...");
+
+    // Auto trigger after short delay
+    tokio::spawn(async {
+        sleep(Duration::from_millis(200)).await;
+
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let _ = sender.send_to(&[1], "127.0.0.1:9000").await;
+    });
+
+    let mut buf = [0u8; 1];
+
+    trigger_socket.recv(&mut buf).await.unwrap();
+
+    println!("Trigger received! Releasing workers...");
+
+    trigger.notify_waiters();
+
+    // Wait for workers
     let _ = futures::future::join_all(handles).await;
 
     pb.finish_with_message("Done!");
 
-    // ============================================================
-    // Synchronization Analysis
-    //
-    // Compute spread between earliest and latest request dispatch
-    // ============================================================
-    let mut starts = start_times.lock().unwrap();
+    // ------------------------------------------------------------
+    // Synchronization analysis
+    // ------------------------------------------------------------
+    let mut starts: Vec<u64> = start_times
+        .iter()
+        .map(|x| x.load(Ordering::Relaxed))
+        .filter(|x| *x > 0)
+        .collect();
 
     if starts.len() > 1 {
-
         starts.sort();
 
         let first = starts.first().unwrap();
@@ -223,13 +198,10 @@ async fn main() -> PyResult<()> {
         println!("Latest send:   {} ns", last);
         println!("Spread:        {} µs", spread_ns / 1_000);
     }
-    else {
-        println!("Not enough samples to analyze start times.");
-    }
 
-    // ============================================================
-    // Latency Statistics
-    // ============================================================
+    // ------------------------------------------------------------
+    // Latency statistics
+    // ------------------------------------------------------------
     let total_time = start_time.elapsed();
 
     let mut final_latencies = latencies.lock().unwrap();
@@ -246,9 +218,11 @@ async fn main() -> PyResult<()> {
     );
 
     if !final_latencies.is_empty() {
+        let p95 =
+            final_latencies[(final_latencies.len() as f64 * 0.95) as usize];
 
-        let p95 = final_latencies[(final_latencies.len() as f64 * 0.95) as usize];
-        let p99 = final_latencies[(final_latencies.len() as f64 * 0.99) as usize];
+        let p99 =
+            final_latencies[(final_latencies.len() as f64 * 0.99) as usize];
 
         println!("p95 Latency:    {}ms", p95);
         println!("p99 Latency:    {}ms", p99);
