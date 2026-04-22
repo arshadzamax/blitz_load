@@ -5,7 +5,7 @@ export default function ResultsSummary({ results, onReset }) {
   if (!results) return null;
 
   const {
-    completed, total, successes, failures,
+    completed, total, successes, failures, sla_breaches,
     total_time_ms, rps, avg_latency_ms,
     p50_latency_ms, p95_latency_ms, p99_latency_ms, spread_us
   } = results;
@@ -52,6 +52,22 @@ export default function ResultsSummary({ results, onReset }) {
           <span className="text-xs font-bold uppercase mt-1">P95: {p95_latency_ms}ms</span>
         </div>
       </div>
+
+      {(sla_breaches !== undefined && sla_breaches > 0) && (
+        <div className="neo-card bg-orange-500 text-[#1a1a1a] p-6 border-b-[8px] border-b-orange-700 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div>
+            <h3 className="font-bold text-xl uppercase mb-1 flex items-center gap-2">
+              ⚠️ SLA Breaches Detected
+            </h3>
+            <p className="font-mono text-sm opacity-90 max-w-lg">
+              Some requests took longer to complete than your specified SLA limit threshold.
+            </p>
+          </div>
+          <div className="text-4xl font-black font-mono">
+            {sla_breaches}
+          </div>
+        </div>
+      )}
 
       <div className="neo-card bg-[#1a1a1a] text-white p-6 border-b-[8px] border-b-[var(--neo-secondary)] flex flex-col md:flex-row justify-between items-center gap-4">
         <div>

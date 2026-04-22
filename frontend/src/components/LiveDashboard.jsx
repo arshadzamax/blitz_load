@@ -9,6 +9,7 @@ export default function LiveDashboard({ testId, onComplete, onError }) {
     rps: 0,
     success: 0,
     fail: 0,
+    sla_breaches: 0,
     avg: 0,
     p95: 0
   });
@@ -33,6 +34,7 @@ export default function LiveDashboard({ testId, onComplete, onError }) {
             rps: payload.rps,
             success: payload.successes,
             fail: payload.failures,
+            sla_breaches: payload.sla_breaches,
             avg: payload.avg_latency_ms,
             p95: payload.p95_latency_ms
           });
@@ -130,8 +132,11 @@ export default function LiveDashboard({ testId, onComplete, onError }) {
           <div className="flex justify-between font-bold w-full uppercase text-sm mb-2">
             <span>Success</span> <span className="text-[var(--neo-accent)]">{metrics.success}</span>
           </div>
-          <div className="flex justify-between font-bold w-full uppercase text-sm">
+          <div className="flex justify-between font-bold w-full uppercase text-sm mb-2">
             <span>Failed</span> <span className="text-[var(--neo-danger)]">{metrics.fail}</span>
+          </div>
+          <div className="flex justify-between font-bold w-full uppercase text-sm">
+            <span>SLA Breaches</span> <span className="text-orange-500">{metrics.sla_breaches}</span>
           </div>
         </div>
       </div>

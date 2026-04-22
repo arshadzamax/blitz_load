@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+@theme {
+  --color-border: #000;
+  --font-family-sans: "Space Grotesk", sans-serif;
+  --font-family-mono: "JetBrains Mono", monospace;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  :root {
+    --bg-color: #f4f4f0;
+    --text-color: #1a1a1a;
+    --border-color: #1a1a1a;
+    --panel-bg: #ffffff;
+    
+    /* Neo Colors Light */
+    --neo-primary: #fcd34d; /* yellow */
+    --neo-secondary: #f472b6; /* pink */
+    --neo-accent: #34d399; /* green */
+    --neo-danger: #f87171; /* red */
+    --neo-shadow: #1a1a1a;
+  }
+  
+  .dark {
+    --bg-color: #1a1a1a;
+    --text-color: #f4f4f0;
+    --border-color: #2a2a2a;
+    --panel-bg: #222222;
+    
+    /* Neo Colors Dark */
+    --neo-primary: #fcd34d; /* yellow */
+    --neo-secondary: #f472b6; /* pink */
+    --neo-accent: #34d399; /* green */
+    --neo-danger: #f87171; /* red */
+    --neo-shadow: #000000;
+  }
+
+  body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+  }
+}
+
+@layer components {
+  .neo-card {
+    background-color: var(--panel-bg);
+    border: 3px solid var(--border-color);
+    box-shadow: 6px 6px 0px var(--neo-shadow);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  
+  .neo-button {
+    background-color: var(--panel-bg);
+    border: 3px solid var(--border-color);
+    box-shadow: 4px 4px 0px var(--neo-shadow);
+    color: var(--text-color);
+    font-weight: bold;
+    text-transform: uppercase;
+    transition: transform 0.1s, box-shadow 0.1s;
+    outline: none;
+  }
+  
+  .neo-button:active {
+    transform: translate(4px, 4px);
+    box-shadow: 0px 0px 0px var(--neo-shadow);
+  }
+  
+  .neo-button-primary {
+    background-color: var(--neo-primary);
+    color: #1a1a1a;
+  }
+
+  .neo-button-danger {
+    background-color: var(--neo-danger);
+    color: #1a1a1a;
+  }
+  
+  .neo-input {
+    background-color: var(--panel-bg);
+    color: var(--text-color);
+    border: 3px solid var(--border-color);
+    box-shadow: 4px 4px 0px var(--neo-shadow);
+    outline: none;
+    transition: box-shadow 0.2s, border-color 0.2s;
+  }
+  
+  .neo-input:focus {
+    border-color: var(--neo-primary);
+    box-shadow: 6px 6px 0px var(--neo-primary);
+  }
+}

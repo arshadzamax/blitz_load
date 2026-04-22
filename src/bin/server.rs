@@ -47,12 +47,16 @@ struct RunRequest {
     #[serde(default = "default_scenario")]
     scenario: String,
     custom_body: Option<String>,
+    #[serde(default = "default_timeout")]
+    timeout_ms: u64,
+    sla_ms: Option<u64>,
 }
 
 fn default_method()      -> String { "post".into() }
 fn default_requests()    -> usize  { 100 }
 fn default_concurrency() -> usize  { 10 }
 fn default_scenario()    -> String { "user_registration".into() }
+fn default_timeout()     -> u64    { 30000 }
 
 #[derive(Serialize)]
 struct RunResponse {
@@ -83,8 +87,10 @@ async fn run_handler(
 
     let config = BlitzConfig {
         url: body.url,
-        requests: body.requests.min(500),
-        concurrency: body.concurrency.min(50),
+        requests: body.requests,
+        concurrency: body.concurrency,
+        timeout_ms: body.timeout_ms,
+        sla_ms: body.sla_ms,
         method: if body.method.to_lowercase() == "get" {
             HttpMethod::Get
         } else {

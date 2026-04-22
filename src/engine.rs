@@ -33,6 +33,8 @@ pub struct BlitzConfig {
     pub concurrency: usize,
     pub method: HttpMethod,
     pub scenario: ScenarioKind,
+    pub timeout_ms: u64,
+    pub sla_ms: Option<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +49,7 @@ pub enum ProgressEvent {
         total: usize,
         successes: usize,
         failures: usize,
+        sla_breaches: usize,
         rps: f64,
         avg_latency_ms: f64,
         p95_latency_ms: u128,
@@ -56,6 +59,7 @@ pub enum ProgressEvent {
         total: usize,
         successes: usize,
         failures: usize,
+        sla_breaches: usize,
         total_time_ms: u64,
         rps: f64,
         avg_latency_ms: f64,
@@ -116,13 +120,14 @@ fn percentile(sorted: &[u128], p: f64) -> u128 {
 /// Using `broadcast::Sender` means the frontend can freely reconnect without
 /// crashing the Rust worker.
 pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>) {
-    // Enforce hard safety caps
-    let total = config.requests.min(500);
-    let concurrency = config.concurrency.min(50);
+    // Use config values directly
+    let total = config.requests;
+    let concurrency = config.concurrency;
 
-    let client = Arc::new(Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default());
+    let client = Arc::new(Client::builder().timeout(std::time::Duration::from_millis(config.timeout_ms)).build().unwrap_or_default());
     let success_count  = Arc::new(AtomicUsize::new(0));
     let failure_count  = Arc::new(AtomicUsize::new(0));
+    let sla_breach_count = Arc::new(AtomicUsize::new(0));
     let completed      = Arc::new(AtomicUsize::new(0));
     let latencies      = Arc::new(Mutex::new(Vec::<u128>::new()));
     let start_times: Arc<Vec<AtomicU64>> = Arc::new(
@@ -139,6 +144,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
         let client        = Arc::clone(&client);
         let success_count = Arc::clone(&success_count);
         let failure_count = Arc::clone(&failure_count);
+        let sla_breach_count = Arc::clone(&sla_breach_count);
         let completed     = Arc::clone(&completed);
         let latencies     = Arc::clone(&latencies);
         let start_times   = Arc::clone(&start_times);
@@ -146,6 +152,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
         let url           = config.url.clone();
         let method        = config.method.clone();
         let scenario      = config.scenario.clone();
+        let sla_ms        = config.sla_ms;
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -174,6 +181,11 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
                 Ok(r) if r.status().is_success() => {
                     success_count.fetch_add(1, Ordering::Relaxed);
                     latencies.lock().unwrap().push(duration);
+                    if let Some(sla) = sla_ms {
+                        if duration as u64 > sla {
+                            sla_breach_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
                 _ => {
                     failure_count.fetch_add(1, Ordering::Relaxed);
@@ -189,6 +201,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
     let comp_ref  = Arc::clone(&completed);
     let succ_ref  = Arc::clone(&success_count);
     let fail_ref  = Arc::clone(&failure_count);
+    let sla_ref   = Arc::clone(&sla_breach_count);
     let lats_ref  = Arc::clone(&latencies);
 
     let reporter = tokio::spawn(async move {
@@ -198,6 +211,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
             let done  = comp_ref.load(Ordering::Relaxed);
             let succ  = succ_ref.load(Ordering::Relaxed);
             let fail  = fail_ref.load(Ordering::Relaxed);
+            let sla_breaches = sla_ref.load(Ordering::Relaxed);
             let elapsed = test_start.elapsed().as_secs_f64();
             let rps   = if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 };
 
@@ -219,6 +233,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
                 total,
                 successes: succ,
                 failures: fail,
+                sla_breaches,
                 rps,
                 avg_latency_ms: avg,
                 p95_latency_ms: p95,
@@ -239,6 +254,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
     let done  = completed.load(Ordering::Relaxed);
     let succ  = success_count.load(Ordering::Relaxed);
     let fail  = failure_count.load(Ordering::Relaxed);
+    let sla_breaches = sla_breach_count.load(Ordering::Relaxed);
     let rps   = if elapsed_ms > 0 { done as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
 
     let mut final_lats = latencies.lock().unwrap().clone();
@@ -264,6 +280,7 @@ pub async fn run_blitz(config: BlitzConfig, tx: broadcast::Sender<ProgressEvent>
         total,
         successes: succ,
         failures: fail,
+        sla_breaches,
         total_time_ms: elapsed_ms,
         rps,
         avg_latency_ms: avg_ms,

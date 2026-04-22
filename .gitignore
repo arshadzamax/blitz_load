@@ -1,1 +1,7 @@
 /target
+
+# Environment files
+.env.local
+.env.*.local
+blitz_load_architecture.md.resolved
+blitz_load_overview.md.resolved

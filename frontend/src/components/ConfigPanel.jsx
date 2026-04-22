@@ -8,12 +8,16 @@ export default function ConfigPanel({ onLaunch, isLoading }) {
     requests: 100,
     concurrency: 10,
     scenario: 'user_registration',
-    custom_body: ''
+    custom_body: '',
+    timeout_ms: 30000,
+    sla_ms: ''
   });
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onLaunch(config);
+    const payload = { ...config };
+    if (payload.sla_ms === '') payload.sla_ms = null;
+    onLaunch(payload);
   };
 
   const handleChange = (e) => {
@@ -75,7 +79,7 @@ export default function ConfigPanel({ onLaunch, isLoading }) {
                 type="range"
                 name="requests"
                 min="10"
-                max="500"
+                max="10000"
                 step="10"
                 value={config.requests}
                 onChange={handleChange}
@@ -92,7 +96,7 @@ export default function ConfigPanel({ onLaunch, isLoading }) {
                 type="range"
                 name="concurrency"
                 min="1"
-                max="50"
+                max="1000"
                 value={config.concurrency}
                 onChange={handleChange}
                 className="w-full h-3 bg-[var(--bg-color)] rounded-none appearance-none border-2 border-[var(--border-color)] outline-none"
@@ -142,6 +146,34 @@ export default function ConfigPanel({ onLaunch, isLoading }) {
               />
             </motion.div>
           )}
+
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex-1 space-y-2">
+              <label className="font-bold uppercase text-sm">Timeout (ms)</label>
+              <input
+                type="number"
+                name="timeout_ms"
+                required
+                min="100"
+                value={config.timeout_ms}
+                onChange={handleChange}
+                className="neo-input w-full font-mono text-sm"
+              />
+            </div>
+            
+            <div className="flex-1 space-y-2">
+              <label className="font-bold uppercase text-sm">SLA Limit (ms)</label>
+              <input
+                type="number"
+                name="sla_ms"
+                min="10"
+                value={config.sla_ms}
+                onChange={handleChange}
+                className="neo-input w-full font-mono text-sm"
+                placeholder="Optional"
+              />
+            </div>
+          </div>
 
           <div className="pt-4">
             <button
